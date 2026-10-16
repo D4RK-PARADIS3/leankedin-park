@@ -1,0 +1,2 @@
+# Keep the license byte-identical in Linux, macOS and Windows packages.
+LICENSE.md text eol=lf

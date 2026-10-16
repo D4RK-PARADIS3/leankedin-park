@@ -1,0 +1,265 @@
+name: Publish packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUST_VERSION: '1.99.0'
+  MATURIN_VERSION: '1.15.0'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.10'
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: publish-rust
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config
+      - name: Install metadata tools
+        run: python -m pip install packaging tomli
+      - name: Check package configuration and release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python .github/scripts/check_dist.py --config-only
+          python -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Test Rust core, Python conversions and documentation
+        run: cargo test --workspace --locked
+      - name: Verify standalone Rust package
+        run: |
+          cargo package -p leankedin-park --locked
+          cargo package -p leankedin-park --locked --list > /tmp/core-package-files.txt
+          grep -Fx 'LICENSE.md' /tmp/core-package-files.txt
+          if grep -Ei '(^python/|\.(py|pyi|pyd)$)' /tmp/core-package-files.txt; then
+            echo 'Python files found in the Rust package'
+            exit 1
+          fi
+          if cargo tree -p leankedin-park --locked --prefix none | grep -E '^pyo3([ -]|$)'; then
+            echo 'PyO3 found in the Rust core dependency tree'
+            exit 1
+          fi
+
+  wheels:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.10'
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+      - name: Configure Windows native build tools
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      - name: Build portable wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          working-directory: python
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
+          sccache: true
+          target: ${{ matrix.target }}
+          manylinux: '2_28'
+          args: --release --strip --locked --out ../dist
+          before-script-linux: |
+            dnf install -y clang clang-devel llvm-devel cmake pkgconf-pkg-config
+      - name: Install and import the wheel without contacting LinkedIn
+        shell: bash
+        run: |
+          python -m pip install --pre --no-index --only-binary=:all: --find-links dist leankedin-park
+          python -c "from leankedin_park import Browser, ClientConfig, Linkedin, SearchPeopleBuilder; ClientConfig(Browser.Firefox); SearchPeopleBuilder()"
+      - name: Test the installed Python extension
+        run: |
+          python -m unittest discover -s python -p 'test_search_validation.py'
+          python -m unittest discover -s python -p 'test_stub_contract.py'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist-wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.10'
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: publish-sdist
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config
+          python -m pip install "maturin==${MATURIN_VERSION}"
+      - name: Build source distribution
+        working-directory: python
+        run: |
+          maturin sdist --out ../dist
+          git diff --exit-code -- ../Cargo.lock
+      - name: Rebuild and import from source distribution outside the checkout
+        working-directory: /tmp
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          python -m pip install --config-settings="maturin.build-args=--locked" "${GITHUB_WORKSPACE}"/dist/*.tar.gz
+          python -c "from leankedin_park import Browser, ClientConfig, Linkedin, SearchPeopleBuilder; ClientConfig(Browser.Firefox); SearchPeopleBuilder()"
+      - name: Test the extension rebuilt from the sdist
+        run: |
+          python -m unittest discover -s python -p 'test_search_validation.py'
+          python -m unittest discover -s python -p 'test_stub_contract.py'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  test-wheels:
+    needs: wheels
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            python: '3.11'
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            python: '3.12'
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            python: '3.13'
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            python: '3.14'
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            python: '3.14'
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            python: '3.14'
+          - os: macos-15
+            target: aarch64-apple-darwin
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist-wheel-${{ matrix.target }}
+          path: dist
+      - name: Test the same abi3 wheel on newer Python versions
+        run: |
+          python -m pip install --pre --no-index --only-binary=:all: --find-links dist leankedin-park
+          python -m unittest discover -s python -p 'test_search_validation.py'
+          python -m unittest discover -s python -p 'test_stub_contract.py'
+
+  check-distributions:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.10'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - run: python -m pip install 'twine>=6,<7' packaging tomli
+      - name: Validate all artifacts before publishing to either registry
+        run: |
+          python -m twine check --strict dist/*
+          python .github/scripts/check_dist.py
+
+  publish-crates:
+    if: github.event_name == 'release'
+    needs: [validate, test-wheels, check-distributions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: publish-rust
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config
+      - name: Publish Rust core only
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p leankedin-park --locked
+
+  publish-pypi:
+    if: github.event_name == 'release'
+    needs: publish-crates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment:
+      name: pypi
+      url: https://pypi.org/p/leankedin-park
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Publish wheels and source distribution with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

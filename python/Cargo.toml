@@ -1,0 +1,23 @@
+[package]
+name = "leankedin-park-py"
+version = "0.1.0-alpha.1"
+edition = "2024"
+publish = false
+description = "Python bindings for the Rust  leankedin-park crate"
+license-file = "LICENSE.md"
+readme = "README.md"
+repository = "https://github.com/D4RK-PARADIS3/leankedin-park"
+
+[lib]
+name = "leankedin_park"
+crate-type = ["cdylib"]
+
+[dependencies]
+leankedin-park = { path = "../core", version = "=0.1.0-alpha.1" }
+pyo3 = { version = "0.28", features = ["abi3", "abi3-py310"] }
+pyo3-log = "0.13"
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+log = "0.4"
+
+[dev-dependencies]
+serde_json = "1.0.149"

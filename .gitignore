@@ -1,0 +1,31 @@
+# Rust
+target/
+Cargo.lock
+!/Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+
+temp/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.json
+
+# Github
+.github/README.md

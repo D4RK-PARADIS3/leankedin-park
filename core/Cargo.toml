@@ -1,0 +1,31 @@
+[package]
+name = "leankedin-park"
+version = "0.1.0-alpha.1"
+edition = "2024"
+description = "Fast, ergonomic and lightweight Rust client for the LinkedIn API"
+license-file = "LICENSE.md"
+readme = "README.md"
+repository = "[https://github.com/D4RK-PARADIS3/leankedin-park](https://github.com/D4RK-PARADIS3/leankedin-park)"
+keywords = ["linkedin", "api", "client", "scraper"]
+categories = ["web-programming::http-client", "api-bindings"]
+
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+wreq = { version = "=6.0.0-rc.28", features = ["cookies", "json"] }
+wreq-util = "=3.0.0-rc.10"
+rookie = "0.5.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.9"
+uuid = { version = "1.18.1", features = ["v4"] }
+thiserror = "2.0.16"
+typed-builder = "0.23.0"
+url = "2.5"
+log = "0.4"
+serde_urlencoded = "0.7.1"
+bytes = "1.11"
+
+[dev-dependencies]
+env_logger = "0.11"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
