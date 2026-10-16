@@ -5,7 +5,7 @@ edition = "2024"
 description = "Fast, ergonomic and lightweight Rust client for the LinkedIn API"
 license-file = "LICENSE.md"
 readme = "README.md"
-repository = "[https://github.com/D4RK-PARADIS3/leankedin-park](https://github.com/D4RK-PARADIS3/leankedin-park)"
+repository = "https://github.com/D4RK-PARADIS3/leankedin-park"
 keywords = ["linkedin", "api", "client", "scraper"]
 categories = ["web-programming::http-client", "api-bindings"]
 

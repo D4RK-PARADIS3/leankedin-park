@@ -80,24 +80,13 @@ Thanks to its Rust core, this project is dramatically lighter on CPU, memory, an
 Build and install locally using [Maturin](https://github.com/PyO3/maturin):
 
 ```bash
-
-  
-
 cd  python
-
-  
-
 maturin  develop  --release
-
-  
-
 ```
 
 ### Quickstart Example
 
-```python
-
-  
+```python  
 from leankedin_park import Browser, ClientConfig, Linkedin
 
 # Initialize configuration with browser cookie extraction and human-like request jitter
