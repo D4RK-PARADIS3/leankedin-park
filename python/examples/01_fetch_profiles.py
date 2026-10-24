@@ -48,7 +48,7 @@ def main() -> None:
             """
             # Full profile information is returned as FullProfileData.
             full = linkedin.get_full_infos_of_a_profile("williamhgates")
-            logger.info("Full profile: %s %s", full.first_name, full.last_name)
+            logger.info("Full profile: %s %s -- %s", full.first_name, full.last_name, full.profile_urn)
             logger.info("Followers: %s", full.follower_count)
             logger.info("Following: %s", full.is_following)
 

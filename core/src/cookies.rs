@@ -16,7 +16,6 @@ use rookie::{brave, chrome, chromium, edge, firefox};
 
 const LINKEDIN_DOMAIN: &str = "linkedin.com";
 const LINKEDIN_DOMAIN_FOR_MANDATORY_COOKIES: &str = ".www.linkedin.com"; // "li_at" and "JSESSIONID" cookies, this domain is only used for manually loaded cookies
-const LINKEDIN_URL: &str = "https://www.linkedin.com";
 const COOKIE_LI_AT: &str = "li_at";
 const COOKIE_JSESSIONID: &str = "JSESSIONID";
 
@@ -71,30 +70,50 @@ pub(crate) fn new(browser: Browser, source: &CookieSource) -> Result<(Jar, Strin
 
     validate_essential_cookies(&cookies)?;
 
-    let jar = Jar::default();
-    let url = LINKEDIN_URL
-        .parse::<Uri>()
-        .expect("Static LinkedIn URL should always parse");
-
     let csrf_token: &str =
         get_csrf_token_from_cookies_vec(&cookies).ok_or(CookieError::CantCreateCsrfToken)?;
 
-    for cookie in &cookies {
-        trace!(
-            "Processing cookie: '{}' (Domain: {}, Path: {})",
-            cookie.name, cookie.domain, cookie.path
-        );
-
-        let cookie_str = format!("{}={}", cookie.name, cookie.value);
-
-        if let Ok(header) = HeaderValue::from_str(&cookie_str) {
-            jar.set_cookies(&mut std::iter::once(&header), &url);
-        }
-    }
+    let jar = import_cookie_jar(&cookies)?;
 
     info!("Successfully loaded the cookies");
 
     Ok((jar, csrf_token.to_string()))
+}
+
+// Keep each cookie's original scope instead of flattening all cookies onto
+// www.linkedin.com. In particular, .linkedin.com cookies also apply to uploads
+// on another LinkedIn subdomain, while /voyager cookies stay on that path.
+fn import_cookie_jar(cookies: &[Cookie]) -> Result<Jar, LinkedInError> {
+    let jar = Jar::default();
+    for cookie in cookies {
+        trace!(
+            "Processing cookie: '{}' (Domain: {}, Path: {})",
+            cookie.name, cookie.domain, cookie.path
+        );
+        let host = cookie.domain.trim_start_matches('.');
+        let origin = format!("https://{host}/")
+            .parse::<Uri>()
+            .map_err(|_| LinkedInError::Api("Invalid imported cookie domain".into()))?;
+        let path = if cookie.path.is_empty() {
+            "/"
+        } else {
+            &cookie.path
+        };
+        let mut cookie_str = format!("{}={}; Path={}", cookie.name, cookie.value, path);
+        if cookie.domain.starts_with('.') {
+            cookie_str.push_str("; Domain=");
+            cookie_str.push_str(&cookie.domain);
+        }
+        if cookie.secure {
+            cookie_str.push_str("; Secure");
+        }
+        if cookie.http_only {
+            cookie_str.push_str("; HttpOnly");
+        }
+        let header = HeaderValue::from_str(&cookie_str)?;
+        jar.set_cookies(&mut std::iter::once(&header), &origin);
+    }
+    Ok(jar)
 }
 
 pub(crate) fn get_linkedin_cookies_from_browser(
@@ -261,6 +280,60 @@ mod tests {
             http_only: true,
             same_site: 0,
         }
+    }
+
+    fn cookie_header(jar: &dyn CookieStore, url: &str) -> String {
+        match jar.cookies(&url.parse::<Uri>().unwrap()) {
+            wreq::cookie::Cookies::Compressed(value) => value.to_str().unwrap().to_owned(),
+            wreq::cookie::Cookies::Uncompressed(values) => values
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join("; "),
+            wreq::cookie::Cookies::Empty => String::new(),
+            _ => panic!("Unexpected cookie representation"),
+        }
+    }
+
+    #[test]
+    fn imported_cookies_keep_domain_path_and_secure_scope() {
+        let mut shared = mock_cookie("shared", "root");
+        shared.domain = ".linkedin.com".into();
+        let mut web = mock_cookie("web", "www");
+        web.domain = "www.linkedin.com".into();
+        let mut scoped = mock_cookie("scoped", "root");
+        scoped.domain = ".linkedin.com".into();
+        scoped.name = "scoped".into();
+        scoped.path = "/voyager".into();
+        let jar = import_cookie_jar(&[shared, web, scoped]).unwrap();
+        let upload = cookie_header(&jar, "https://upload.linkedin.com/media");
+        assert_eq!(upload, "shared=root");
+        let messaging = cookie_header(&jar, "https://www.linkedin.com/voyager/api/me");
+        for expected in ["shared=root", "web=www", "scoped=root"] {
+            assert!(messaging.contains(expected));
+        }
+        assert!(!cookie_header(&jar, "https://www.linkedin.com/voyager-other").contains("scoped="));
+        assert!(cookie_header(&jar, "https://linkedin.com.example.org/media").is_empty());
+        assert!(cookie_header(&jar, "https://example.org/media").is_empty());
+        assert!(cookie_header(&jar, "http://upload.linkedin.com/media").is_empty());
+    }
+
+    #[test]
+    fn same_name_cookies_on_distinct_paths_are_not_overwritten() {
+        let mut root = mock_cookie("session", "root");
+        root.domain = ".linkedin.com".into();
+        let mut scoped = mock_cookie("session", "scoped");
+        scoped.domain = ".linkedin.com".into();
+        scoped.path = "/voyager".into();
+        scoped.value = "scoped".into();
+        let jar = import_cookie_jar(&[root, scoped]).unwrap();
+        assert_eq!(
+            cookie_header(&jar, "https://www.linkedin.com/"),
+            "session=root"
+        );
+        let header = cookie_header(&jar, "https://www.linkedin.com/voyager/api");
+        assert!(header.contains("session=root"));
+        assert!(header.contains("session=scoped"));
     }
 
     #[test]
